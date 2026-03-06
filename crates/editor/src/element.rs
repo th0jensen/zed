@@ -7,7 +7,7 @@ use crate::{
     FocusedBlock, GutterDimensions, HalfPageDown, HalfPageUp, HandleInput, HoveredCursor,
     InlayHintRefreshReason, JumpData, LineDown, LineHighlight, LineUp, MAX_LINE_LEN,
     MINIMAP_FONT_SIZE, MULTI_BUFFER_EXCERPT_HEADER_HEIGHT, OpenExcerpts, PageDown, PageUp,
-    PhantomBreakpointIndicator, PhantomDiffReviewIndicator, Point, RowExt, RowRangeExt,
+    PhantomBreakpointIndicator, PhantomDiffReviewIndicator, Point, RowExt, RowRangeExt, SelectAll,
     SelectPhase, Selection, SelectionDragState, SelectionEffects, SizingBehavior, SoftWrap,
     StickyHeaderExcerpt, ToPoint, ToggleFold, ToggleFoldAll,
     code_context_menus::{CodeActionsMenu, MENU_ASIDE_MAX_WIDTH, MENU_ASIDE_MIN_WIDTH, MENU_GAP},
@@ -693,6 +693,61 @@ impl EditorElement {
         });
     }
 
+    fn display_point_hits_folded_buffer(
+        editor: &Editor,
+        position_map: &PositionMap,
+        display_point: DisplayPoint,
+        cx: &App,
+    ) -> bool {
+        if editor.buffer().read(cx).is_singleton() {
+            return false;
+        }
+
+        let multi_buffer_point = position_map
+            .snapshot
+            .display_point_to_point(display_point, Bias::Right);
+        position_map
+            .snapshot
+            .buffer_snapshot()
+            .buffer_line_for_row(MultiBufferRow(multi_buffer_point.row))
+            .map(|(buffer_snapshot, _)| buffer_snapshot.remote_id())
+            .is_some_and(|buffer_id| editor.is_buffer_folded(buffer_id, cx))
+    }
+
+    fn selection_point_for_mouse(
+        editor: &Editor,
+        position_map: &PositionMap,
+        point_for_position: PointForPosition,
+        cx: &App,
+    ) -> Option<DisplayPoint> {
+        if editor.buffer().read(cx).is_singleton() {
+            return Some(point_for_position.previous_valid);
+        }
+
+        let previous_is_folded = Self::display_point_hits_folded_buffer(
+            editor,
+            position_map,
+            point_for_position.previous_valid,
+            cx,
+        );
+        let next_is_folded = Self::display_point_hits_folded_buffer(
+            editor,
+            position_map,
+            point_for_position.next_valid,
+            cx,
+        );
+
+        if previous_is_folded && !next_is_folded {
+            return Some(point_for_position.next_valid);
+        }
+
+        if previous_is_folded {
+            return None;
+        }
+
+        Some(point_for_position.previous_valid)
+    }
+
     fn mouse_left_down(
         editor: &mut Editor,
         event: &MouseDownEvent,
@@ -734,6 +789,16 @@ impl EditorElement {
             return;
         }
 
+        let is_singleton = editor.buffer().read(cx).is_singleton();
+        let selection_position =
+            Self::selection_point_for_mouse(editor, position_map, point_for_position, cx);
+        let clicked_folded_buffer = selection_position.is_none();
+
+        if clicked_folded_buffer && click_count == 1 {
+            cx.stop_propagation();
+            return;
+        }
+
         if EditorSettings::get_global(cx)
             .drag_and_drop_selection
             .enabled
@@ -753,8 +818,6 @@ impl EditorElement {
                 return;
             }
         }
-
-        let is_singleton = editor.buffer().read(cx).is_singleton();
 
         if click_count == 2 && !is_singleton {
             match EditorSettings::get_global(cx).double_click_in_multibuffer {
@@ -832,7 +895,18 @@ impl EditorElement {
             }
         }
 
-        let position = point_for_position.previous_valid;
+        if clicked_folded_buffer {
+            cx.stop_propagation();
+            return;
+        }
+
+        if click_count >= 4 && !is_singleton && editor.has_any_buffer_folded(cx) {
+            editor.select_all(&SelectAll, window, cx);
+            cx.stop_propagation();
+            return;
+        }
+
+        let position = selection_position.unwrap_or(point_for_position.previous_valid);
         if let Some(mode) = Editor::columnar_selection_mode(&modifiers, cx) {
             editor.select(
                 SelectPhase::BeginColumnar {
@@ -1051,6 +1125,16 @@ impl EditorElement {
     ) {
         let text_hitbox = &position_map.text_hitbox;
         let pending_nonempty_selections = editor.has_pending_nonempty_selection();
+
+        if let Some(mouse_position) = event.mouse_position() {
+            let point_for_position = position_map.point_for_position(mouse_position);
+            if Self::selection_point_for_mouse(editor, position_map, point_for_position, cx)
+                .is_none()
+            {
+                cx.stop_propagation();
+                return;
+            }
+        }
 
         let hovered_link_modifier = Editor::is_cmd_or_ctrl_pressed(&event.modifiers(), cx);
         let mouse_down_hovered_link_modifier = if let ClickEvent::Mouse(mouse_event) = event {

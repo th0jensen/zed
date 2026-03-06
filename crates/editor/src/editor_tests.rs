@@ -30540,7 +30540,7 @@ async fn test_multibuffer_selections_with_folding(cx: &mut TestAppContext) {
             .unwrap();
     });
 
-    // Fold second buffer - should remove selections from folded buffer
+    // Fold second buffer - selection should be retained in folded buffer
     cx.update_editor(|editor, _, cx| {
         editor.fold_buffer(buffer_ids[1], cx);
     });
@@ -30550,10 +30550,10 @@ async fn test_multibuffer_selections_with_folding(cx: &mut TestAppContext) {
         2ˇ
         3
         [EXCERPT]
-        [FOLDED]
+        ˇ[FOLDED]
         "});
 
-    // Insert text - should only affect first buffer
+    // Typing should unfold folded selections and edit them.
     cx.update_editor(|editor, window, cx| {
         editor.handle_input("Y", window, cx);
     });
@@ -30567,9 +30567,25 @@ async fn test_multibuffer_selections_with_folding(cx: &mut TestAppContext) {
         3
         [EXCERPT]
         1
-        2
+        Yˇ
         3
         "});
+
+    // Scenario 2b: select-all spanning folded buffers should not be editable.
+    cx.update_editor(|editor, _, cx| {
+        editor.fold_buffer(buffer_ids[1], cx);
+    });
+    cx.update_editor(|editor, window, cx| {
+        editor.select_all(&SelectAll, window, cx);
+        editor.handle_input("Q", window, cx);
+    });
+    cx.update_multibuffer(|multi_buffer, cx| {
+        let buffer_2 = multi_buffer.buffer(buffer_ids[1]).unwrap();
+        assert_eq!(buffer_2.read(cx).text(), "1\nY\n3\n");
+    });
+    cx.update_editor(|editor, _, cx| {
+        editor.unfold_buffer(buffer_ids[1], cx);
+    });
 
     // Scenario 3: Select "2", then fold first buffer before insertion
     cx.update_multibuffer(|mb, cx| {
@@ -30591,20 +30607,20 @@ async fn test_multibuffer_selections_with_folding(cx: &mut TestAppContext) {
             .unwrap();
     });
 
-    // Fold first buffer - should remove selections from folded buffer
+    // Fold first buffer - selection should be retained in folded buffer
     cx.update_editor(|editor, _, cx| {
         editor.fold_buffer(buffer_ids[0], cx);
     });
     cx.assert_excerpts_with_selections(indoc! {"
         [EXCERPT]
-        [FOLDED]
+        ˇ[FOLDED]
         [EXCERPT]
         1
         2ˇ
         3
         "});
 
-    // Insert text - should only affect second buffer
+    // Typing should unfold folded selections and edit them.
     cx.update_editor(|editor, window, cx| {
         editor.handle_input("Z", window, cx);
     });
@@ -30614,7 +30630,7 @@ async fn test_multibuffer_selections_with_folding(cx: &mut TestAppContext) {
     cx.assert_excerpts_with_selections(indoc! {"
         [EXCERPT]
         1
-        2
+        Zˇ
         3
         [EXCERPT]
         1
@@ -30622,19 +30638,19 @@ async fn test_multibuffer_selections_with_folding(cx: &mut TestAppContext) {
         3
         "});
 
-    // Test correct folded header is selected upon fold
+    // Test folded buffers retain their selections
     cx.update_editor(|editor, _, cx| {
         editor.fold_buffer(buffer_ids[0], cx);
         editor.fold_buffer(buffer_ids[1], cx);
     });
     cx.assert_excerpts_with_selections(indoc! {"
         [EXCERPT]
-        [FOLDED]
+        ˇ[FOLDED]
         [EXCERPT]
         ˇ[FOLDED]
         "});
 
-    // Test selection inside folded buffer unfolds it on type
+    // Typing should unfold folded selections and edit them.
     cx.update_editor(|editor, window, cx| {
         editor.handle_input("W", window, cx);
     });
@@ -30644,11 +30660,11 @@ async fn test_multibuffer_selections_with_folding(cx: &mut TestAppContext) {
     cx.assert_excerpts_with_selections(indoc! {"
         [EXCERPT]
         1
-        2
+        ZWˇ
         3
         [EXCERPT]
-        Wˇ1
-        Z
+        1
+        ZWˇ
         3
         "});
 }

@@ -4591,13 +4591,13 @@ impl Editor {
     pub fn handle_input(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         let text: Arc<str> = text.into();
 
+        self.unfold_buffers_with_selections(cx);
+
         if self.read_only(cx) {
             return;
         }
 
         self.hide_mouse_cursor(HideMouseCursorOrigin::TypingAction, cx);
-
-        self.unfold_buffers_with_selections(cx);
 
         let selections = self.selections.all_adjusted(&self.display_snapshot(cx));
         let mut bracket_inserted = false;
@@ -15397,8 +15397,30 @@ impl Editor {
 
     pub fn select_all(&mut self, _: &SelectAll, window: &mut Window, cx: &mut Context<Self>) {
         self.hide_mouse_cursor(HideMouseCursorOrigin::MovementAction, cx);
+
+        if self.buffer().read(cx).is_singleton() || !self.has_any_buffer_folded(cx) {
+            self.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
+                s.select_ranges([Anchor::min()..Anchor::max()]);
+            });
+            return;
+        }
+
+        let folded_buffers = self.folded_buffers(cx).clone();
+        let snapshot = self.buffer.read(cx).snapshot(cx);
+        let unfolded_excerpt_ranges = snapshot
+            .excerpts()
+            .filter(|(_, buffer, _)| !folded_buffers.contains(&buffer.remote_id()))
+            .map(|(excerpt_id, _, range)| {
+                Anchor::range_in_buffer(excerpt_id, range.context.clone())
+            })
+            .collect::<Vec<_>>();
+
+        if unfolded_excerpt_ranges.is_empty() {
+            return;
+        }
+
         self.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
-            s.select_ranges([Anchor::min()..Anchor::max()]);
+            s.select_anchor_ranges(unfolded_excerpt_ranges);
         });
     }
 
@@ -20488,13 +20510,6 @@ impl Editor {
 
         self.display_map.update(cx, |display_map, cx| {
             display_map.fold_buffers(ids_to_fold.clone(), cx)
-        });
-
-        let snapshot = self.display_snapshot(cx);
-        self.selections.change_with(&snapshot, |selections| {
-            for buffer_id in ids_to_fold {
-                selections.remove_selections_from_buffer(buffer_id);
-            }
         });
 
         cx.emit(EditorEvent::BufferFoldToggled {
